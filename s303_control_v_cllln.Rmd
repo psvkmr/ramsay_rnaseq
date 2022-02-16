@@ -1,0 +1,729 @@
+---
+title: "S303 - Control v CLL LN"
+author: "Prasanth Sivakumar"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: TRUE
+    toc_depth: 4
+    toc_collapsed: FALSE
+    toc_float: FALSE
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = normalizePath('C:/Users/Prasanth/Documents/ramsey/')) 
+```
+
+### Input data
+
+
+```{r libs, message=FALSE, warning=FALSE}
+library(PCAtools)
+library(DESeq2)
+library(tidyverse)
+library(vsn)
+library(pheatmap)
+library(ggrepel)
+library(gprofiler2)
+```
+
+```{r load_cms}
+# load count matrices
+load('ramsey_s303_norm_counts_matrix.RData')
+load('ramsey_s303_non_zero_counts_matrix.RData')
+```
+
+```{r load_md}
+# load metadata
+md <- read.csv('s303_metadata.csv')
+```
+
+```{r ids}
+ids <- read.csv('C:/Users/Prasanth/google_drive/guys/resources/biomart_unique_ensembl_genes.csv')
+```
+
+```{r modify_md}
+# add matrix sample names to metadata variable as different
+#md$matrix_id <- stringr::str_sort(colnames(zcm), numeric = T)
+# wrong length because NAT 4 is in metadata but not matrix
+md <- md[md$sample_id != 'NAT 4', ]
+# works after removing
+md$matrix_id <- stringr::str_sort(colnames(zcm), numeric = T)
+# check to make sure
+#View(md[, c('sample_id', 'matrix_id')])
+
+# re-sort whole md to match matrix variable order
+md <- arrange(md, factor(matrix_id, levels = colnames(zcm)))
+# convert matrix ids to row names
+md <- column_to_rownames(md, 'matrix_id')
+
+# edit md 'reactive lymph nodes' to shorten
+md$sample_group <- gsub('Lymph Nodes\n$', 'LN', md$sample_group)
+md$sample_group <- gsub('\n$', '', md$sample_group)
+md$sample_group <- gsub(' ', '_', md$sample_group)
+
+```
+
+&nbsp;
+
+#### Metadata
+
+```{r study_specific}
+# in this analysis, only the 'NAT' samples are going to be used, 
+# so both the md and cm will be subsetted for these
+smpls <- colnames(zcm)[grep('NAT', colnames(zcm))]
+nat.cm <- zcm[, smpls]
+nat.ncm <- ncm[, smpls]
+nat.md <- md[smpls, ]
+
+# sample groups
+smpl.grps <- list(cll_ln = rownames(nat.md[nat.md$sample_group == 'CLL_LN', ]), 
+                  cll_pb = rownames(nat.md[nat.md$sample_group == 'CLL_PB', ]), 
+                  ctrl = rownames(nat.md[nat.md$sample_group == 'Control', ]), 
+                  reac = rownames(nat.md[nat.md$sample_group == 'Reactive_LN', ]))
+```
+
+```{r md}
+# subset metadata by comparisons
+mds <- list(ctrl_v_cll_ln = md[c(smpl.grps$ctrl, smpl.grps$cll_ln), ], 
+            ctrl_v_cll_pb = md[c(smpl.grps$ctrl, smpl.grps$cll_pb), ], 
+            ctrl_v_reac = md[c(smpl.grps$ctrl, smpl.grps$reac), ])
+
+mds$ctrl_v_cll_ln$sample_group <- factor(mds$ctrl_v_cll_ln$sample_group, levels = c('Control', 'CLL_LN'))
+mds$ctrl_v_cll_pb$sample_group <- factor(mds$ctrl_v_cll_pb$sample_group, levels = c('Control', 'CLL_PB'))
+mds$ctrl_v_reac$sample_group <- factor(mds$ctrl_v_reac$sample_group, levels = c('Control', 'Reactive_LN'))
+```
+
+The number of samples used in this analysis
+
+```{r nsamples}
+length(mds$ctrl_v_cll_ln$sample_id)
+```
+
+IDs of the samples used in the analysis
+
+```{r smpls}
+mds$ctrl_v_cll_ln$sample_id
+```
+
+Number of samples split by contrast group
+
+```{r grps}
+table(mds$ctrl_v_cll_ln$sample_group)
+```
+
+Metadata file subset provided for the analysis. Not all variables in this file were used in the analysis process.
+
+```{r mdr}
+mds$ctrl_v_cll_ln
+```
+
+&nbsp;
+&nbsp;
+
+#### Input count matrices
+
+Dimensions of the input counts matrix for analysis: rows (genes) x columns (samples)
+
+```{r zcms}
+# cms subset by sample group comparisons
+zcms <- list(ctrl_v_cll_ln = zcm[, c(smpl.grps$ctrl, smpl.grps$cll_ln)], 
+             ctrl_v_cll_pb = zcm[, c(smpl.grps$ctrl, smpl.grps$cll_pb)], 
+             ctrl_v_reac = zcm[, c(smpl.grps$ctrl, smpl.grps$reac)])
+
+# cms filtered for low counts specifically in comparison subset
+zcms <- lapply(zcms, function(mat) mat[rowSums(mat) > (((dim(mat)[2])/2)-1), ])
+
+
+dim(zcms$ctrl_v_cll_ln)
+```
+
+5x5 subset example of the counts matrix pre-normalisation
+
+```{r cmsub}
+zcms$ctrl_v_cll_ln[1:5, 1:5]
+```
+
+The same 5x5 subset example of the counts matrix post-normalisation for library size and possible tissue discrepancies
+
+```{r ncms}
+# normalised subset cms
+ncms <- list(ctrl_v_cll_ln = ncm[, c(smpl.grps$ctrl, smpl.grps$cll_ln)], 
+             ctrl_v_cll_pb = ncm[, c(smpl.grps$ctrl, smpl.grps$cll_pb)], 
+             ctrl_v_reac = ncm[, c(smpl.grps$ctrl, smpl.grps$reac)])
+
+ncms$ctrl_v_cll_ln[1:5, 1:5]
+```
+
+&nbsp;
+&nbsp;
+
+#### Outliers
+
+Outline of potential outlier counts in genes for every sample.  Outlier here is defined as a value 3 standard deviations away from the mean count for that gene across the samples. 
+Outlier counts: (NULL means no outlier gene counts)
+
+```{r outliers, message=FALSE}
+# outlier check
+outlierCheck <- function(mat){
+  g <- list()
+  s <- list()
+  for (i in 1:(dim(mat)[1])){
+    mean.i <- mean(mat[i, ])
+    sd.i <- sd(mat[i, ])
+    for (j in mat[i, ]){
+      if (j > (mean.i + (3*sd.i)) & sd.i > 1){
+        g <- append(g, row.names(mat)[i])
+        s <- append(s, colnames(mat)[which(mat[i, ] == j)])
+      } else if (j < (mean.i - (3*sd.i)) & sd.i > 1){
+        g <- append(g, row.names(mat)[i])
+        s <- append(s, colnames(mat)[which(mat[i, ] == j)])
+      }
+    }
+  }
+  o <- data.frame('sample' = unlist(s), 'gene' = unlist(g))
+  return(o)
+}
+
+outliers <- lapply(ncms, outlierCheck)
+```
+
+```{r outplt}
+plotOutliers <- function(outlier){
+  df <- as.data.frame(table(outlier$sample))
+  if (nrow(df) != 0){ 
+    ggplot(df, aes(Var1, Freq)) + 
+      geom_col(fill = 'lightsalmon3') +
+      labs(x = 'Sample', y = 'Outlier Gene Count') + 
+      theme_classic() +
+      theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+  }
+}
+
+outliers.plots <- lapply(outliers, plotOutliers)
+
+outliers.plots$ctrl_v_cll_ln
+```
+
+&nbsp;
+&nbsp;
+
+### Clustering
+
+&nbsp;
+
+#### PCA
+
+```{r vst}
+# stabilise variance across data to make it homoskedastic
+svcms <- lapply(zcms, varianceStabilizingTransformation)
+# similar to scale(log2(ncms$ctrl_v_reac + 1), center = T, scale = T)
+```
+
+
+```{r run_pcas, message=FALSE}
+# run pca, remove bottom 10% of variables based on variance
+pcas <- list()
+for (name in names(svcms)){
+  p <- pca(svcms[[name]], metadata = mds[[name]], removeVar = 0.1)
+  p <- list(p)
+  names(p) <- name
+  pcas <- append(pcas, p)
+}
+```
+
+Principal component analysis is unsupervised, the results do not factor in the sample group to which each sample has been labelled. \n
+
+The analysis produces 'components'. Each component can be used to explain a % of the total variation across the samples counts. 
+&nbsp;
+&nbsp;
+
+##### Scree plot
+
+How few components the variation in samples be reduced to.
+
+Scree plots show the results of this. Principal component 1 explains the most variation. Also marked is the principal component at which cumulatively 80% of the variation in the dataset can be explained. 
+
+```{r screes, warning=FALSE}
+# plot the components eigenvalues as % variance explanation
+optimumScree <- function(pca, svcm, ttl){
+  comp <- which(cumsum(pca$variance) > 80)[1]
+  plt <- screeplot(pca,
+            components = getComponents(pca, 1:8),
+            vline = comp, axisLabSize = 8, 
+            title = ttl, gridlines.major = F, gridlines.minor = F, 
+            borderWidth = 0.5, xlabAngle = 45, colBar = 'lightsalmon3') +
+    geom_label(aes(x = comp, y = 10,
+                   label = '80% explained', vjust = -3, hjust = 1, size = 8)) 
+  return(plt)
+}
+
+optimumScree(pcas$ctrl_v_cll_ln, svcms$ctrl_v_cll_ln, 'Control v CLL LN')
+#optimumScree(pcas$ctrl_v_cll_pb, svcms$ctrl_v_cll_pb, 'Control v CLL PB')
+#optimumScree(pcas$ctrl_v_reac, svcms$ctrl_v_reac, 'Control v Reactive LN')
+```
+
+#### Bi-plot
+
+How samples vary relative to each other in the top principal components.
+
+Here are the classic PCA plots showing differences between each sample, labelled by sample group. Each sample group is also highlighted, and sample ID labelled. \
+
+
+```{r bi_sample, message=FALSE}
+# biplot of all samples by PC1 vs PC2, with clouds
+bi.plt.smpls <- 
+  lapply(pcas, function(p) biplot(p, showLoadings = F, colby = 'sample_group', 
+                                  encircle = T, widthConnectors = 0.1, 
+                                  gridlines.minor = F,  gridlines.major = F,
+                                  legendPosition = 'right', legendLabSize = 8,
+                                  legendTitleSize = 8, legendIconSize = 4,
+                                  axisLabSize = 8, borderWidth = 0.5, xlim = c(-25, 25)))
+
+bi.plt.smpls$ctrl_v_cll_ln
+```
+
+
+#### Pair-plot
+
+How the samples vary by each of the top 4 PCs compared.
+
+Overview of principal component comparisons across the first 4 components. for each analysis. In each grid, each principal component in compared to every other principal component from PC1-PC4. This can be useful to see if the samples segregate by sample group in components smaller than PC1 and PC2.
+
+
+```{r paired}
+# comparison scatters for PC1-4 on grid
+pairs.plt <- 
+  lapply(pcas, function(p) pairsplot(p, components = getComponents(p, 1:4),
+                                     triangle = F, colby = 'sample_group',
+                                     axisLabSize = 8, 
+                                     margingaps = unit(c(0.2, 0.2, 0.2, 0.2), 'cm'), 
+                                     borderWidth = 0.5))
+pairs.plt$ctrl_v_cll_ln
+```
+
+The sample-based principal component information outlined above can be seen in table format. In this table, the value of each sample in each principal component is displayed. 
+
+```{r rotated}  
+# sample contribution to each PC
+rotateds <- lapply(pcas, `[[`, 'rotated') %>% lapply(`[`, 1:4)
+rotateds$ctrl_v_cll_ln
+```
+
+&nbsp;
+&nbsp;
+
+#### Loadings
+
+Which genes have the most influence in variation explained by each prinicipal component.
+
+Plot of loadings for each principal component. Each gene in the matrix has a different level of influence on the variation in the principal component as a whole. Genes with the largest component loading (here in absolute values) can be thought of as the genes driving the differences in the component. 
+
+```{r loadings, message=FALSE}
+# plot individual contribution of genes with largest loadings
+loadings.plt <- 
+  lapply(pcas, function(p) plotloadings(p, components = getComponents(p, 1:4), rangeRetain = 0.001, 
+                                        shapeSizeRange = c(2, 10), absolute = T, legendPosition = 'none', 
+                                        #legendLabSize = 8, legendIconSize = 4, 
+                                        axisLabSize = 8, gridlines.major = F, gridlines.minor = F, hline = NULL, 
+                                        borderWidth = 0.5, labSize = 2, labhjust = 0.9, 
+                                        col = c('white', 'lightsalmon3')))
+loadings.plt$ctrl_v_cll_ln
+```
+
+#### PC - Variable correlation
+
+Which metadata variables align best with the principal components.
+
+Correlation table for each principal component by variables provided in the metadata (r-squared). A strong correlation betwen principal component and variable suggests that the variable underlies a strong proportion of the variation explained by that principal component. If a variable correlates strongly with PC1, then that suggests that the variable has a strong impact on overall variation in the gene counts differences in the counts matrix.
+
+```{r eigcor2, warning=FALSE}
+# get pearson r2 values and significane of correlation of PCs with metadata variables
+# unnamed columns
+eigencorr2.plt <-
+  lapply(pcas, function(p) eigencorplot(p, getComponents(p, 1:4),
+                                        metavars = c('sample_group', "rin_2", 
+                                                     "a260_280_ndrop"), 
+                                        colCorval = 'white', posColKey = 'top', 
+                                        plotRsquared = T, corFUN = 'pearson', corUSE = 'pairwise.complete.obs', 
+                                        col = c('navajowhite2', 'indianred1', 'indianred2', 'firebrick1'), corMultipleTestCorrection = 'BH'))
+eigencorr2.plt$ctrl_v_cll_ln
+```
+
+
+```{r dds, message=FALSE}
+#deseq.dataset <- DESeqDataSetFromMatrix(countData = nat.cm, 
+deseq.dataset <- DESeqDataSetFromMatrix(countData = zcms$ctrl_v_cll_ln[apply(zcms$ctrl_v_cll_ln, 1, function(x) all(x !=0 )), ],
+                       colData = mds$ctrl_v_cll_ln, 
+                       design = ~ sample_group)
+```
+
+```{r filt_dds, message=FALSE}
+deseq.dataset.filtered <- deseq.dataset[rowSums(counts(deseq.dataset)) >= 20]
+```
+
+```{r deseq, message=FALSE}
+deseq.analysis <- DESeq(deseq.dataset.filtered)
+```
+
+&nbsp;
+&nbsp;
+
+#### Heatmap of abundant genes
+
+Heatmap of normalised expression levels of the top 10 most abundant genes in the dataset by sample. 
+On top is the result of heirarchical clustering by correlation of gene counts, showing how similar sample gene counts are across these abundant genes.
+
+```{r clust}
+select <- order(rowMeans(counts(deseq.analysis, normalized=T)),
+                  decreasing=T)[1:10]
+df <- as.data.frame(colData(deseq.analysis)[, 'sample_group'], row.names = row.names(colData(deseq.analysis))) %>% `names<-`('Group')
+
+pheatmap(assay(normTransform(deseq.analysis))[select,], cluster_rows=F, show_rownames=T, cluster_cols=T, annotation_col = df, scale = 'row', clustering_distance_rows = 'correlation')
+```
+
+&nbsp;
+&nbsp;
+
+#### Heatmap of all genes
+
+Heatmap of normalised expression levels of all expressed genes in the dataset by sample. 
+On top is the result of heirarchical clustering by correlation of gene counts, showing how similar sample gene counts are across all expressed genes.
+
+
+```{r fh}
+gselect <- order(rowMeans(counts(deseq.analysis, normalized=T)),
+                  decreasing=T)
+#gselect <- filter(deseq.dfs$reactive_ln, padj < 0.05)$ensembl_gene_id
+df <- as.data.frame(colData(deseq.analysis)[, 'sample_group'], row.names = row.names(colData(deseq.analysis))) %>% `names<-`('Group')
+pheatmap(assay(varianceStabilizingTransformation(deseq.analysis))[gselect, ], cluster_rows=F, show_rownames = F, cluster_cols = T, annotation_col = df, scale = 'row')
+
+```
+
+&nbsp;
+&nbsp;
+
+#### Heatmap of sample similarity
+
+Heatmap of sample by sample comparison across all expressed gene counts. Clustering based on similarity described by complete euclidean distances.
+
+```{r cor}
+vsd <- varianceStabilizingTransformation(deseq.analysis)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$sample_group, vsd$sample_id, sep="-")
+colnames(sampleDistMatrix) <- NULL
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists)
+```
+
+&nbsp;
+&nbsp;
+
+
+### Differential gene expression
+
+To analyse the differential expression across all genes in the dataset by the provided design, three steps are required, and all are run combined using a single function in DESeq2.
+
+1. Normalisation
+1. Estimated dispersion
+1. Statistical analysis
+
+&nbsp;
+&nbsp;
+
+#### Differential gene expression results summary
+
+Brief summary of number of significant gene expression changes by up- and downregulation.
+
+```{r res, message=FALSE}
+deseq.results <- list()
+deseq.results$cll_ln <- results(deseq.analysis, contrast = c('sample_group', 'CLL_LN', 'Control'))
+summary(deseq.results$cll_ln, alpha = 0.05)
+```
+
+&nbsp;
+
+Example subset of results file columns for top 5 most significantly differentially expressed genes.
+
+
+```{r results_df}
+toDf <- function(res){
+  arrange(as.data.frame(res), pvalue) %>% 
+    rownames_to_column(var = 'ensembl_gene_id') %>%
+    left_join(ids, by = 'ensembl_gene_id') %>%
+    mutate(fold_change = 2^log2FoldChange) %>%
+    dplyr::select(c('external_gene_name', 'ensembl_gene_id', 'uniprot_gn_id', 
+                    'chromosome_name', 'start_position', 'end_position', 
+                    'fold_change', 'log2FoldChange', 'pvalue', 'padj'))
+}
+
+deseq.dfs <- lapply(deseq.results, toDf)
+
+#write_csv(deseq.dfs$cll_ln, 'C:/Users/Prasanth/google_drive/guys/ramsey/s303_control_v_cllln.csv')
+
+head(deseq.dfs$cll_ln, n = 5)
+```
+
+&nbsp;
+&nbsp;
+
+#### Volcano plot
+
+Volcano plot showing distribution of differential gene expression by signficance level and fold change magnitude. Gene datapoints differentiated by colour for strong changes (pvalue < 0.05, fold change > |1.5|), slight changes (pvalue < 0.05, fold change <= |1.5|), no significant change (pvalue > 0.05). The cutoffs are for adjusted pvalue (Benjamini Hochberg method), and for regular fold change of |1.5|.
+
+```{r volcano, warning=FALSE}
+gfill <- c('Strongly up' = 'red', 'Slightly up' = 'pink', 
+          'Strongly down' = 'blue', 'Slightly down' = 'lightblue', 
+          'None' = 'grey')
+gsize <- c('Strongly up' = 2, 'Slightly up' = 2, 
+          'Strongly down' = 2, 'Slightly down' = 2, 
+          'None' = 1)
+
+
+plotVolcano <- function(res){
+  as.data.frame(res) %>%
+    filter(!is.na(padj)) %>%
+    mutate(change = ifelse(padj < 0.05, 
+                           ifelse(log2FoldChange > 0, 
+                                  ifelse(log2FoldChange > log2(1.5), 'Strongly up', 'Slightly up'), 
+                                  ifelse(log2FoldChange < -log2(1.5), 'Strongly down', 'Slightly down')), 
+                           'None')) %>%
+  ggplot(aes(log2FoldChange, -log10(pvalue))) + 
+    geom_point(aes(fill = change, size = change), shape = 21, alpha = 0.5) +
+    scale_fill_manual(values = gfill) +
+    scale_size_manual(values = gsize) +
+    geom_hline(yintercept = -log10(0.00265), linetype = 'dashed', alpha = 0.5) +
+    geom_vline(xintercept = log2(1.5), linetype = 'dashed', alpha = 0.5) +
+    geom_vline(xintercept = -log2(1.5), linetype = 'dashed', alpha = 0.5) +
+    theme_classic()
+}
+
+plotVolcano(deseq.results$cll_ln)
+```
+
+&nbsp;
+
+#### All strongly upregulated genes 
+
+In alphabetical order
+
+
+```{r up}
+strongly.up <- filter(deseq.dfs$cll_ln, padj < 0.05 & log2FoldChange > log2(1.5))$external_gene_name
+sort(strongly.up[strongly.up != ''])
+```
+
+&nbsp;
+
+#### All slightly upregulated genes 
+
+In alphabetical order
+
+
+```{r sup}
+slightly.up <- filter(deseq.dfs$cll_ln, padj < 0.05 & log2FoldChange > 0 & log2FoldChange <= log2(1.5))$external_gene_name
+sort(slightly.up[slightly.up != ''])
+```
+
+&nbsp;
+
+#### All slightly downregulated genes 
+
+In alphabetical order
+
+
+```{r sdown}
+slightly.down <- filter(deseq.dfs$cll_ln, padj < 0.05 & log2FoldChange < 0 & fold_change >= -log2(1.5))$external_gene_name
+sort(slightly.down[slightly.down != ''])
+```
+
+&nbsp;
+
+#### All strongly downregulated genes 
+
+In alphabetical order
+
+
+```{r down}
+strongly.down <- filter(deseq.dfs$cll_ln, padj < 0.05 & log2FoldChange < -log2(1.5))$external_gene_name
+sort(strongly.down[strongly.down != ''])
+```
+
+&nbsp;
+&nbsp;
+
+### Contextualisation
+
+The differentially expressed genes can be contextualised by examining their impacts in different tissues, pathways, interactions and biological processes. Below are enrichments of the differentially expressed genes in various gene sets. Enrichments are analysed for strongly upregulated genes alone, strongly downregulated genes alone, or for all signficantly dysregulated genes regardless of fold change. If a plot is missing for any of these groups in these contextualisations, there were no signficant overlaps in this case.
+
+&nbsp;
+
+#### Gene ontology
+
+Bar charts of GO terms by adjusted pvalue. Pvalue calculated by proportion of query genes intersecting the GO term total gene size.
+Source: [GO Consortium - The Gene Ontology Databse](http://geneontology.org)
+
+```{r gofuncs}
+runGo <- function(gl, srce, ordr = TRUE){
+  gost(query = gl,
+                organism = "hsapiens", ordered_query = ordr, 
+                significant = FALSE, exclude_iea = FALSE, 
+                measure_underrepresentation = FALSE, evcodes = FALSE, 
+                user_threshold = 0.05, correction_method = "g_SCS", 
+                domain_scope = "annotated", custom_bg = deseq.dfs$cll_ln$external_gene_name, 
+                sources = srce, as_short_link = FALSE)
+}
+dfGo <- function(go){
+  filter(go, p_value < 0.05) %>% 
+  arrange(p_value) %>%
+  dplyr::select(c('term_name', 'term_id', 'source', 'parents', 'term_size', 'query_size', 'intersection_size', 'p_value'))
+}
+plotGo <- function(df, ttl){
+  slice_head(df, n = ifelse(nrow(df) > 10, 10, nrow(df))) %>%
+  ggplot(aes(reorder(str_wrap(term_name, 35), -p_value), -log10(p_value))) + 
+  geom_col(aes(fill = source), width = 0.5) + 
+  coord_flip() +
+  theme_classic() +
+  labs(x = 'term', title = str_wrap(ttl)) +
+  theme(title = element_text(size = 8))
+}
+```
+
+
+```{r go, message=FALSE}
+goup <- runGo(strongly.up, 'GO')
+goupdf <- dfGo(goup$result)
+plotGo(goupdf, 'GO terms - strongly upreguated genes')
+
+godown <- runGo(strongly.down, 'GO')
+godowndf <- dfGo(godown$result)
+#plotGo(godowndf, 'GO terms - strongly downregulated genes')
+
+goall <- runGo(c(strongly.up, strongly.down, slightly.up, slightly.down), 'GO')
+goalldf <- dfGo(goall$result)
+plotGo(goalldf, 'GO terms - all significant genes')
+```
+
+&nbsp;
+&nbsp;
+
+#### Impacted pathways
+
+Bar charts of pathways by adjusted pvalue. Pvalue calculated by proportion of query genes intersecting the total number of genes involved in the pathway.
+Sources: [KEGG: Kyoto Encyclopedia of Genes and Genomes](https://www.genome.jp/kegg/);  [Reactome](https://reactome.org);  [WikiPathways - A Database of Biological Pathways](https://www.wikipathways.org/index.php/WikiPathways)
+
+```{r path, message=FALSE}
+pathup <- runGo(strongly.up, c('KEGG', 'REAC', 'WP'))
+pathupdf <- dfGo(pathup$result)
+plotGo(pathupdf, 'Pathways - strongly upregulated genes')
+
+pathdown <- runGo(strongly.down, c('KEGG', 'REAC', 'WP'))
+pathdowndf <- dfGo(pathdown$result)
+plotGo(pathdowndf, 'Pathways - strongly downregulated genes')
+
+pathall <- runGo(c(strongly.up, strongly.down, slightly.up, slightly.down), c('KEGG', 'REAC', 'WP'))
+pathalldf <- dfGo(pathall$result)
+plotGo(pathalldf, 'Pathways - all significant genes')
+```
+
+&nbsp;
+&nbsp;
+
+#### Micro-RNA interaction
+
+Bar charts of miRNAs by adjusted pvalue. Pvalue calculated by proportion of query genes intersecting the total number of genes known to interact with the miRNA.
+Source: [miRTarBase: The experimentally validated microRNA-target interactions database](https://mirtarbase.cuhk.edu.cn/~miRTarBase/miRTarBase_2019/php/index.php)
+
+```{r mirna, message=FALSE}
+miup <- runGo(strongly.up, c('MIRNA'))
+miupdf <- dfGo(miup$result)
+plotGo(miupdf, 'miRNA-target interactions - strongly upregulated genes')
+#miupdf[, c(1, 8)]
+
+midown <- runGo(strongly.down, c('MIRNA'))
+midowndf <- dfGo(midown$result)
+plotGo(midowndf, 'miRNA-target interactions - strongly downregulated genes')
+#midowndf[, c(1, 8)]
+
+miall <- runGo(c(strongly.up, strongly.down, slightly.up, slightly.down), c('MIRNA'))
+mialldf <- dfGo(miall$result)
+plotGo(mialldf, 'miRNA-target interactions - all significant genes')
+```
+
+&nbsp;
+&nbsp;
+
+#### Tissue enrichment
+
+Bar charts of tissue type by adjusted pvalue. Pvalue calculated by proportion of query genes intersecting the total number of genes expressed in the tissue.
+Source: [The Human Protein Atlas](https://www.proteinatlas.org)
+
+```{r hpa, message=FALSE}
+hpup <- runGo(strongly.up, c('HPA'))
+hpupdf <- dfGo(hpup$result)
+plotGo(hpupdf, 'Tissue enrichment - strongly upregulated genes')
+
+hpdown <- runGo(strongly.down, c('HPA'))
+hpdowndf <- dfGo(hpdown$result)
+#plotGo(hpdowndf, 'Tissue enrichment - strongly downregulated genes')
+
+hpall <- runGo(c(strongly.up, strongly.down, slightly.up, slightly.down), c('HPA'))
+hpalldf <- dfGo(hpall$result)
+plotGo(hpalldf, 'Tissue enrichment - all significant genes')
+```
+
+&nbsp;
+&nbsp;
+
+#### Protein-protein complexes affected
+
+Bar charts of protein-protein complexes by adjusted pvalue. Pvalue calculated by proportion of query genes intersecting the total number of genes coding for a protein involved in the protein-protein complex.
+Source: [The comprehensive resource of mammalian protein complexes - CORUM](https://mips.helmholtz-muenchen.de/corum/)
+
+```{r corum, message=FALSE}
+coup <- runGo(strongly.up, c('CORUM'))
+coupdf <- dfGo(coup$result)
+# remove duplicate entry
+coupdf <- coupdf[!coupdf$term_id == 'CORUM:1119', ]
+plotGo(coupdf, 'Protein complexes - strongly upregulated genes')
+
+codown <- runGo(strongly.down, c('CORUM'))
+codowndf <- dfGo(codown$result)
+codowndf <- codowndf[!codowndf$term_id == 'CORUM:1119', ]
+#plotGo(codowndf, 'Protein complexes - strongly downregulated genes')
+
+coall <- runGo(c(strongly.up, strongly.down, slightly.up, slightly.down), c('CORUM'))
+coalldf <- dfGo(coall$result)
+coalldf <- coalldf[!coalldf$term_id == 'CORUM:1119', ]
+plotGo(coalldf, 'Protein-protein complexes - all significant genes')
+```
+
+&nbsp;
+&nbsp;
+
+#### Phenotype ontology
+
+Bar charts of phenotype ontology terms by adjusted pvalue. Pvalue calculated by proportion of query genes intersecting the phenotype term total gene size.
+Source: [The Human Phenotype Ontology](https://hpo.jax.org/app/)
+
+```{r hpo, message=FALSE}
+hpoup <- runGo(strongly.up, c('HP'))
+hpoupdf <- dfGo(hpoup$result)
+plotGo(hpoupdf, 'Phenotype onotology - strongly upregulated genes')
+#hpoupdf[, c(1, 8)]
+
+hpodown <- runGo(strongly.down, c('HP'))
+hpodowndf <- dfGo(hpodown$result)
+plotGo(hpodowndf, 'Phenotype onotology - strongly downregulated genes')
+#hpodowndf[, c(1, 8)]
+
+hpoall <- runGo(c(strongly.up, strongly.down, slightly.up, slightly.down), c('HP'))
+hpoalldf <- dfGo(hpoall$result)
+plotGo(hpoalldf, 'Phenotype onotology - all significant genes')
+```
+
+Output files:
+Full differential gene expression results tables written to .csv file 's303_control_v_cllln.csv'
