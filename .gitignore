@@ -1,0 +1,5 @@
+# html report files
+*.html
+
+# Rmd cache files
+*_files/
