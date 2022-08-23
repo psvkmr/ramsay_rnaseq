@@ -73,8 +73,7 @@ nat.ncm <- ncm[, smpls]
 nat.md <- md[smpls, ]
 
 # sample groups
-smpl.grps <- list(Control = rownames(nat.md[nat.md$Disease == 'N', ]),
--                  Disease = rownames(nat.md[nat.md$Disease == 'Y', ]))
+smpl.grps <- list(Control = rownames(nat.md[nat.md$Disease == 'N', ]), Disease = rownames(nat.md[nat.md$Disease == 'Y', ]))
 mds <- nat.md
 ```
 
