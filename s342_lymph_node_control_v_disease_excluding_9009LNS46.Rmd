@@ -1,5 +1,5 @@
 ---
-title: "S342 TCL1 Lymph Node Disease v Ctrl"
+title: "S342 TCL1 Lymph Node Disease v Ctrl excluding sample 9009LNS46"
 author: "Prasanth Sivakumar"
 date: "`r Sys.Date()`"
 output: 
@@ -44,6 +44,13 @@ ids <- read.csv('C:/Users/Prasanth/google_drive/guys/resources/mouse_biomart_uni
 ```
 
 ```{r modify_md}
+md <- md[!md$sample %in% c('9009-LN_S46'), ]
+
+# Also drop from CM
+zcm <- zcm[, !colnames(zcm) %in% '9009.LN_S46']
+ncm <- ncm[, !colnames(ncm) %in% '9009.LN_S46']
+
+# works after removing
 # add matrix sample names to metadata variable as different
 md$matrix_id <- gsub('-', '.', md$sample)
 
@@ -412,7 +419,7 @@ toDf <- function(res){
 
 deseq.dfs <- toDf(deseq.results)
 
-#write_csv(deseq.dfs, 'C:/Users/Prasanth/google_drive/guys/ramsey/s342_lymph_node_control_v_disease.csv')
+#write_csv(deseq.dfs, 'C:/Users/Prasanth/google_drive/guys/ramsey/s342_lymph_node_control_v_disease_excluding_9009-LN_S46.csv')
 
 head(deseq.dfs, n = 5)
 ```

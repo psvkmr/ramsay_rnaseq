@@ -1,5 +1,5 @@
 ---
-title: "S342 TCL1 Lymph Node Disease v Ctrl"
+title: "S342 TCL1 Spleen Disease v Ctrl"
 author: "Prasanth Sivakumar"
 date: "`r Sys.Date()`"
 output: 
@@ -67,7 +67,7 @@ md$sampleName <- gsub('\\.', '_', md$sampleName)
 ```{r study_specific}
 # in this analysis, only the 'NAT' samples are going to be used, 
 # so both the md and cm will be subsetted for these
-smpls <- rownames(md[md$MouseModel == 'TCL1' & md$Tissue == 'LN', ])
+smpls <- rownames(md[md$MouseModel == 'TCL1' & md$Tissue == 'SP', ])
 nat.cm <- zcm[, smpls]
 nat.ncm <- ncm[, smpls]
 nat.md <- md[smpls, ]
@@ -247,7 +247,7 @@ bi.plt.smpls <-
                                   gridlines.minor = F,  gridlines.major = F,
                                   legendPosition = 'right', legendLabSize = 8,
                                   legendTitleSize = 8, legendIconSize = 4,
-                                  axisLabSize = 8, borderWidth = 0.5, xlim = c(-120, 120), ylim = c(-50, 50))
+                                  axisLabSize = 8, borderWidth = 0.5, xlim = c(-150, 150), ylim = c(-100, 100))
 bi.plt.smpls
 ```
 
@@ -412,7 +412,7 @@ toDf <- function(res){
 
 deseq.dfs <- toDf(deseq.results)
 
-#write_csv(deseq.dfs, 'C:/Users/Prasanth/google_drive/guys/ramsey/s342_lymph_node_control_v_disease.csv')
+#write_csv(deseq.dfs, 'C:/Users/Prasanth/google_drive/guys/ramsey/s342_spleen_control_v_disease.csv')
 
 head(deseq.dfs, n = 5)
 ```
@@ -507,7 +507,7 @@ sort(strongly.down[strongly.down != ''])
 
 ### Contextualisation
 
-The differentially expressed genes can be contextualised by examining their impacts in different tissues, pathways, interactions and biological processes. Below are enrichments of the differentially expressed genes in various gene sets. Enrichments are analysed for strongly upregulated genes alone, strongly downregulated genes alone, or for all signficantly dysregulated genes regardless of fold change. If a plot is missing for any of these groups in these contextualisations, there were no signficant overlaps in this case.
+The differentially expressed genes can be contextualised by examining their impacts in different tissues, pathways, interactions and biological processes. Below are enrichments of the differentially expressed genes in various gene sets. Enrichments are analysed for  significantly upregulated genes,  significantly downregulated genes, or for all signficantly dysregulated genes together regardless of fold change. If a plot is missing for any of these groups in these contextualisations, there were no significant overlaps in this case.
 
 &nbsp;
 
@@ -614,8 +614,8 @@ Source: [miRTarBase: The experimentally validated microRNA-target interactions d
 
 No significant enrichments here
 
-```{r mirna, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
-# nothing interesting so exclude from report
+```{r mirna, message=FALSE, echo=FALSE, include=FALSE, warning=FALSE}
+# nothing interesting found so exclude
 miup <- runGo(c(strongly.up, slightly.up), c('MIRNA'))
 miupdf <- dfGo(miup$result)
 plotGo(miupdf, 'miRNA-target interactions - significantly upregulated genes')
@@ -670,8 +670,8 @@ Source: [The comprehensive resource of mammalian protein complexes - CORUM](http
 
 No significant enrichments here
 
-```{r corum, message=FALSE, echo=FALSE, include=FALSE, warning=FALSE}
-# nothing interesting so exclude from report
+```{r corum, message=FALSE, echo=FALSE, warning=FALSE, include=FALSE}
+# nothing interesting found so exclude from report
 coup <- runGo(c(strongly.up, slightly.up), c('CORUM'))
 coupdf <- dfGo(coup$result)
 #plotGo(coupdf, 'Protein complexes - significantly upregulated genes')
